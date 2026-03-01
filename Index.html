@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SignBridge — Real ASL Video Call</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,600;1,400&display=swap" rel="stylesheet">
+
+<!-- TF.js stack (versions fingerpose needs) -->
+<script src="https://unpkg.com/@tensorflow/tfjs-core@3.7.0/dist/tf-core.js"></script>
+<script src="https://unpkg.com/@tensorflow/tfjs-converter@3.7.0/dist/tf-converter.js"></script>
+<script src="https://unpkg.com/@tensorflow/tfjs-backend-webgl@3.7.0/dist/tf-backend-webgl.js"></script>
+<!-- TF.js Handpose model (real neural network palm+finger detection) -->
+<script src="https://unpkg.com/@tensorflow-models/handpose@0.0.7/dist/handpose.js"></script>
+<!-- Fingerpose: real finger curl/direction classifier -->
+<script src="https://cdn.jsdelivr.net/npm/fingerpose@0.1.0/dist/fingerpose.min.js"></script>
+
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#09090b;--surface:#111114;--panel:#15151a;--border:rgba(255,255,255,0.07);
+  --white:#f0ede8;--muted:rgba(240,237,232,0.42);
+  --green:#4fffb0;--blue:#4fc3ff;--red:#ff5f7e;--amber:#ffb340;
+  --r:18px;
+}
+body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--white);min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+
+/* ── Loading ── */
+#loadOverlay{position:fixed;inset:0;background:rgba(9,9,11,0.97);backdrop-filter:blur(12px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;z-index:300;transition:opacity .5s}
+#loadOverlay.out{opacity:0;pointer-events:none}
+.spinner{width:48px;height:48px;border:3px solid rgba(79,255,176,.12);border-top-color:var(--green);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.load-title{font-family:'Playfair Display',serif;font-size:1.5rem;color:var(--white)}
+.load-t{color:var(--muted);font-size:.85rem;font-weight:300}
+.load-steps{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.load-step{font-size:.74rem;color:rgba(240,237,232,.3);display:flex;align-items:center;gap:8px;transition:color .3s}
+.load-step.done{color:var(--green)}
+.load-step.active{color:var(--white)}
+.step-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+
+/* ── Header ── */
+header{display:flex;align-items:center;justify-content:space-between;padding:16px 30px;border-bottom:1px solid var(--border);z-index:10;position:relative}
+.logo{display:flex;align-items:center;gap:11px}
+.logo-mark{width:36px;height:36px;background:var(--green);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem}
+.logo-name{font-family:'Playfair Display',serif;font-size:1.2rem}
+.logo-name em{color:var(--green);font-style:normal}
+.hdr-mid{display:flex;align-items:center;gap:10px}
+.timer{font-size:.82rem;color:var(--muted);font-weight:300;letter-spacing:.05em;display:none}
+.timer.on{display:block}
+.live-pill{display:flex;align-items:center;gap:6px;padding:5px 13px;border-radius:100px;background:rgba(79,255,176,.08);border:1px solid rgba(79,255,176,.2);font-size:.72rem;font-weight:500;color:var(--green);opacity:0;transition:opacity .4s}
+.live-pill.on{opacity:1}
+.ldot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:lp 1.2s infinite}
+@keyframes lp{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(1.5)}}
+.back-btn{padding:7px 16px;border-radius:100px;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'Sora',sans-serif;font-size:.8rem;cursor:pointer;transition:all .2s;display:none}
+.back-btn:hover{background:var(--panel);color:var(--white)}
+
+/* ── Landing ── */
+#landing{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 24px;gap:36px;text-align:center;animation:fadeUp .6s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.eyebrow{font-size:.72rem;font-weight:500;letter-spacing:.18em;text-transform:uppercase;color:var(--green);margin-bottom:10px}
+.hero{font-family:'Playfair Display',serif;font-size:clamp(2.2rem,5vw,3.6rem);line-height:1.13;letter-spacing:-.02em;max-width:680px}
+.hero em{font-style:italic;color:var(--green)}
+.sub{font-size:.96rem;color:var(--muted);max-width:460px;line-height:1.72;font-weight:300}
+.tech-badges{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.badge{padding:4px 12px;border-radius:100px;font-size:.7rem;font-weight:500;border:1px solid var(--border);color:var(--muted)}
+.cards{display:flex;gap:18px;margin-top:8px}
+.card{flex:1;max-width:270px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:26px 22px;cursor:pointer;transition:all .25s;text-align:left;position:relative;overflow:hidden}
+.card::after{content:'';position:absolute;inset:0;opacity:0;transition:opacity .3s;pointer-events:none}
+.card.s::after{background:radial-gradient(circle at 50% 0%,rgba(79,255,176,.07),transparent 68%)}
+.card.l::after{background:radial-gradient(circle at 50% 0%,rgba(79,195,255,.07),transparent 68%)}
+.card:hover{border-color:rgba(255,255,255,.13);transform:translateY(-3px)}
+.card:hover::after{opacity:1}
+.card-icon{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.4rem;margin-bottom:14px}
+.card.s .card-icon{background:rgba(79,255,176,.1)}
+.card.l .card-icon{background:rgba(79,195,255,.1)}
+.card-title{font-weight:600;font-size:.97rem;margin-bottom:5px}
+.card-desc{font-size:.8rem;color:var(--muted);line-height:1.6}
+.card-badge{display:inline-block;margin-top:13px;padding:3px 10px;border-radius:100px;font-size:.7rem;font-weight:500}
+.card.s .card-badge{background:rgba(79,255,176,.1);color:var(--green)}
+.card.l .card-badge{background:rgba(79,195,255,.1);color:var(--blue)}
+.landing-note{font-size:.74rem;color:var(--muted);opacity:.55}
+
+/* ── Call View ── */
+#callView{display:none;flex:1;flex-direction:column;padding:16px 22px 20px;gap:14px}
+#callView.on{display:flex;animation:fadeUp .4s ease}
+.vgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;flex:1}
+
+/* ── Video Panel ── */
+.vpanel{position:relative;border-radius:var(--r);overflow:hidden;background:#060609;border:1px solid var(--border);min-height:300px}
+.vpanel video,.vpanel canvas.vc{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.vpanel video{transform:scaleX(-1);z-index:1}
+.vpanel canvas.vc{z-index:2;pointer-events:none}
+/* Mirror canvas drawing too since video is mirrored */
+.vpanel canvas.vc{transform:scaleX(-1)}
+.vlabel{position:absolute;top:12px;left:12px;z-index:8;display:flex;align-items:center;gap:7px;background:rgba(0,0,0,.6);backdrop-filter:blur(8px);padding:5px 12px;border-radius:100px;font-size:.74rem;font-weight:500;border:1px solid rgba(255,255,255,.07)}
+.vdot{width:6px;height:6px;border-radius:50%}
+.fps-badge{position:absolute;top:12px;right:12px;z-index:8;background:rgba(0,0,0,.5);backdrop-filter:blur(6px);padding:4px 10px;border-radius:100px;font-size:.66rem;color:var(--muted);border:1px solid var(--border)}
+
+/* ── Detection badge (top right of signer) ── */
+.det-badge{position:absolute;top:50px;right:12px;z-index:8;display:flex;align-items:center;gap:10px;background:rgba(9,9,11,.82);backdrop-filter:blur(14px);border:1px solid rgba(79,255,176,.25);border-radius:14px;padding:10px 14px;opacity:0;transition:opacity .25s}
+.det-badge.on{opacity:1}
+.det-char{font-family:'Playfair Display',serif;font-size:2rem;color:var(--green);line-height:1;min-width:30px;text-align:center;transition:transform .15s}
+.det-char.pop{transform:scale(1.4);color:#fff}
+.det-meta{display:flex;flex-direction:column;gap:3px}
+.det-cl{font-size:.64rem;color:var(--muted)}
+.det-bar{width:60px;height:3px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden}
+.det-fill{height:100%;background:var(--green);border-radius:4px;transition:width .25s}
+.det-score{font-size:.62rem;color:var(--green)}
+
+/* ── Translation overlay (bottom of video) ── */
+.t-overlay{position:absolute;bottom:0;left:0;right:0;z-index:9;padding:0 14px 14px;pointer-events:none}
+.t-bubble{background:rgba(9,9,11,.86);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.09);border-radius:13px;padding:11px 14px}
+.t-label{font-size:.62rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--green);margin-bottom:5px}
+.t-text{font-size:1rem;color:var(--white);line-height:1.45;word-break:break-word;min-height:1.45em}
+.cursor{display:inline-block;width:2px;height:.9em;background:var(--green);vertical-align:text-bottom;margin-left:1px;animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+/* ── Placeholder ── */
+.vph{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--muted);z-index:5;background:var(--surface);transition:opacity .4s}
+.vph.gone{opacity:0;pointer-events:none}
+.vph-icon{font-size:2.2rem;opacity:.3}
+.vph p{font-size:.82rem}
+
+/* ── Transcript ── */
+.tbar{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:12px 16px;display:flex;align-items:flex-start;gap:13px}
+.tbar-label{font-size:.64rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--green);white-space:nowrap;padding-top:3px}
+.tbar-text{flex:1;font-size:.9rem;color:var(--white);line-height:1.5;word-break:break-word;min-height:1.4em}
+.tbar-actions{display:flex;gap:7px;align-items:center;flex-shrink:0}
+.ta{padding:4px 11px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.72rem;font-weight:500;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);transition:all .2s}
+.ta:hover{background:var(--surface);color:var(--white)}
+
+/* ── Controls ── */
+.cbar{display:flex;align-items:center;justify-content:center;gap:10px}
+.cb{display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 20px;border-radius:100px;font-family:'Sora',sans-serif;font-size:.83rem;font-weight:500;cursor:pointer;border:none;transition:all .2s;white-space:nowrap}
+.cb.p{background:var(--green);color:#09090b}
+.cb.p:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.cb.d{background:rgba(255,95,126,.1);color:var(--red);border:1px solid rgba(255,95,126,.22)}
+.cb.d:hover{background:rgba(255,95,126,.2)}
+.cb.g{background:var(--panel);color:var(--white);border:1px solid var(--border)}
+.cb.g:hover{background:#1c1c22}
+.cb.ico{padding:10px;width:42px;height:42px}
+
+/* ── Hold progress ring (shows when holding a sign) ── */
+.hold-ring{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:80px;height:80px;z-index:15;opacity:0;transition:opacity .2s;pointer-events:none}
+.hold-ring.on{opacity:1}
+.hold-ring svg{transform:rotate(-90deg)}
+.hold-circle{fill:none;stroke:var(--green);stroke-width:4;stroke-dasharray:220;stroke-dashoffset:220;transition:stroke-dashoffset .1s linear;stroke-linecap:round}
+.hold-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:var(--green);font-weight:600}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(14px);background:var(--white);color:#09090b;padding:9px 20px;border-radius:100px;font-size:.8rem;font-weight:500;opacity:0;transition:all .3s;pointer-events:none;z-index:999;white-space:nowrap;box-shadow:0 8px 28px rgba(0,0,0,.5)}
+.toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ── ASL reference panel ── */
+.ref-toggle{position:fixed;bottom:28px;right:28px;width:44px;height:44px;border-radius:50%;background:var(--panel);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:50;font-size:1.1rem;transition:all .2s;display:none}
+.ref-toggle.show{display:flex}
+.ref-toggle:hover{background:var(--surface);border-color:rgba(255,255,255,.15)}
+.ref-panel{position:fixed;bottom:82px;right:28px;width:320px;background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:16px;z-index:50;display:none;max-height:60vh;overflow-y:auto}
+.ref-panel.show{display:block;animation:fadeUp .2s ease}
+.ref-title{font-size:.72rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--green);margin-bottom:12px}
+.ref-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.ref-item{background:var(--surface);border-radius:8px;padding:6px 4px;text-align:center;cursor:default;border:1px solid var(--border)}
+.ref-item .rl{font-family:'Playfair Display',serif;font-size:1.1rem;color:var(--green)}
+.ref-item .rs{font-size:.55rem;color:var(--muted);margin-top:2px}
+
+@media(max-width:700px){
+  .vgrid{grid-template-columns:1fr}
+  .cards{flex-direction:column;align-items:center}
+  header{padding:12px 16px}
+  #callView{padding:10px 10px 14px}
+  .ref-panel{width:calc(100vw - 40px);right:20px}
+}
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loadOverlay">
+  <div class="spinner"></div>
+  <div class="load-title">Sign<em style="color:var(--green);font-style:normal">Bridge</em></div>
+  <div class="load-steps">
+    <div class="load-step active" id="step1"><div class="step-dot"></div>Loading TensorFlow.js</div>
+    <div class="load-step" id="step2"><div class="step-dot"></div>Loading Handpose neural network</div>
+    <div class="load-step" id="step3"><div class="step-dot"></div>Defining ASL gesture library</div>
+    <div class="load-step" id="step4"><div class="step-dot"></div>Warming up WebGL backend</div>
+  </div>
+  <div class="load-t" id="loadMsg">Initialising…</div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">🤟</div>
+    <div class="logo-name">Sign<em>Bridge</em></div>
+  </div>
+  <div class="hdr-mid">
+    <span class="timer" id="timer">00:00</span>
+    <div class="live-pill" id="livePill"><div class="ldot"></div>LIVE</div>
+  </div>
+  <button class="back-btn" id="backBtn" onclick="endCall()">← End Call</button>
+</header>
+
+<!-- Landing -->
+<div id="landing">
+  <div>
+    <p class="eyebrow">Real ML · MediaPipe · TensorFlow.js · Fingerpose</p>
+    <h1 class="hero">Video calls that<br><em>speak every language</em></h1>
+  </div>
+  <p class="sub">SignBridge uses a real neural network (TF.js Handpose) to detect your hand, then Fingerpose classifies ASL letters from actual finger curl and direction data — no heuristics.</p>
+  <div class="tech-badges">
+    <span class="badge">TF.js Handpose NN</span>
+    <span class="badge">Fingerpose Classifier</span>
+    <span class="badge">MediaPipe WebGL</span>
+    <span class="badge">WebRTC Camera</span>
+    <span class="badge">Web Speech API</span>
+  </div>
+  <div class="cards">
+    <div class="card s" onclick="startCall()">
+      <div class="card-icon">🤟</div>
+      <div class="card-title">I use Sign Language</div>
+      <div class="card-desc">Your hands are tracked by a real neural network. ASL letters are recognised from actual finger positions.</div>
+      <span class="card-badge">ASL Signer</span>
+    </div>
+    <div class="card l" onclick="startCall()">
+      <div class="card-icon">💬</div>
+      <div class="card-title">I'm the other person</div>
+      <div class="card-desc">Watch the signer's translated text appear live on their video. Text-to-speech reads it aloud.</div>
+      <span class="card-badge">Listener</span>
+    </div>
+  </div>
+  <p class="landing-note">⚡ Both roles share one browser session in this demo · click either card to begin</p>
+</div>
+
+<!-- Call View -->
+<div id="callView">
+  <div class="vgrid">
+
+    <!-- Signer panel -->
+    <div class="vpanel" id="sigPanel">
+      <video id="sigVid" autoplay playsinline muted></video>
+      <canvas id="sigCvs" class="vc"></canvas>
+
+      <div class="vlabel"><div class="vdot" style="background:var(--green)"></div>ASL Signer</div>
+      <div class="fps-badge" id="fpsBadge">— fps</div>
+
+      <!-- Detected letter badge -->
+      <div class="det-badge" id="detBadge">
+        <div class="det-char" id="detChar">—</div>
+        <div class="det-meta">
+          <div class="det-cl">Fingerpose score</div>
+          <div class="det-bar"><div class="det-fill" id="detFill" style="width:0%"></div></div>
+          <div class="det-score" id="detScore">—/10</div>
+        </div>
+      </div>
+
+      <!-- Hold ring progress -->
+      <div class="hold-ring" id="holdRing">
+        <svg width="80" height="80" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r="35" fill="none" stroke="rgba(79,255,176,.15)" stroke-width="4"/>
+          <circle class="hold-circle" id="holdCircle" cx="40" cy="40" r="35"/>
+        </svg>
+        <div class="hold-label" id="holdLabel"></div>
+      </div>
+
+      <div class="vph" id="sigPh"><div class="vph-icon">🤟</div><p>Camera starting…</p></div>
+
+      <div class="t-overlay">
+        <div class="t-bubble">
+          <div class="t-label">🔤 ASL → Text</div>
+          <div class="t-text" id="sigBubble"><span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Listener panel -->
+    <div class="vpanel">
+      <video id="lstVid" autoplay playsinline muted></video>
+      <canvas id="lstCvs" class="vc"></canvas>
+      <div class="vlabel"><div class="vdot" style="background:var(--blue)"></div>Listener</div>
+      <div class="vph" id="lstPh"><div class="vph-icon">💬</div><p>Camera starting…</p></div>
+      <div class="t-overlay">
+        <div class="t-bubble">
+          <div class="t-label">🔤 Signer is saying…</div>
+          <div class="t-text" id="lstBubble"><span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transcript -->
+  <div class="tbar">
+    <div class="tbar-label">Transcript</div>
+    <div class="tbar-text" id="tbarText">Waiting for signs…</div>
+    <div class="tbar-actions">
+      <button class="ta" onclick="speakT()">🔊</button>
+      <button class="ta" onclick="copyT()">⎘ Copy</button>
+      <button class="ta" onclick="delLast()">⌫</button>
+      <button class="ta" onclick="clearT()">Clear</button>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="cbar">
+    <button class="cb g ico" id="micBtn" onclick="toggleMic()" title="Toggle mic">🎤</button>
+    <button class="cb d" onclick="endCall()">✕ &nbsp;End Call</button>
+    <button class="cb g" onclick="speakT()">🔊 &nbsp;Speak</button>
+  </div>
+</div>
+
+<!-- ASL Reference toggle -->
+<button class="ref-toggle" id="refToggle" onclick="toggleRef()">🔤</button>
+<div class="ref-panel" id="refPanel">
+  <div class="ref-title">ASL Alphabet Reference</div>
+  <div class="ref-grid" id="refGrid"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// GLOBALS
+// ═══════════════════════════════════════════════════════════
+let handposeModel = null;
+let gestureEstimator = null;
+let sigStream = null, lstStream = null;
+let transcript = '';
+let lastLetter = null, holdCount = 0;
+const HOLD_FRAMES = 12; // ~12 frames at ~15fps ≈ 0.8s hold
+let detecting = false;
+let animFrame = null;
+let callInterval = null;
+let micMuted = false;
+let lastFpsTime = 0, frameCounter = 0;
+let refVisible = false;
+
+// ═══════════════════════════════════════════════════════════
+// ASL GESTURE DEFINITIONS — using Fingerpose curl/direction API
+// All 26 letters + space. J and Z are motion signs (skipped).
+// ═══════════════════════════════════════════════════════════
+function buildGestures() {
+  const { GestureDescription, Finger, FingerCurl, FingerDirection } = fp;
+  const NoCurl   = FingerCurl.NoCurl;
+  const HalfCurl = FingerCurl.HalfCurl;
+  const FullCurl = FingerCurl.FullCurl;
+  const VUp      = FingerDirection.VerticalUp;
+  const VDown    = FingerDirection.VerticalDown;
+  const HLeft    = FingerDirection.HorizontalLeft;
+  const HRight   = FingerDirection.HorizontalRight;
+  const DUL      = FingerDirection.DiagonalUpLeft;
+  const DUR      = FingerDirection.DiagonalUpRight;
+  const DDL      = FingerDirection.DiagonalDownLeft;
+  const DDR      = FingerDirection.DiagonalDownRight;
+  const T = Finger.Thumb, I = Finger.Index, M = Finger.Middle, R = Finger.Ring, P = Finger.Pinky;
+
+  const g = {};
+
+  // A — closed fist, thumb alongside side
+  g.A = new GestureDescription('A');
+  g.A.addCurl(T, NoCurl, 1.0); g.A.addCurl(T, HalfCurl, 0.9);
+  for(const f of [I,M,R,P]){ g.A.addCurl(f, FullCurl, 1.0); g.A.addCurl(f, HalfCurl, 0.8); }
+
+  // B — four fingers straight up, thumb folded across palm
+  g.B = new GestureDescription('B');
+  g.B.addCurl(T, FullCurl, 1.0); g.B.addCurl(T, HalfCurl, 0.8);
+  for(const f of [I,M,R,P]){ g.B.addCurl(f, NoCurl, 1.0); g.B.addDirection(f, VUp, 1.0); g.B.addDirection(f, DUR, 0.8); }
+
+  // C — curved C-shape all fingers
+  g.C = new GestureDescription('C');
+  for(const f of [T,I,M,R,P]){ g.C.addCurl(f, HalfCurl, 1.0); g.C.addCurl(f, NoCurl, 0.7); }
+
+  // D — index up, others curl to touch thumb
+  g.D = new GestureDescription('D');
+  g.D.addCurl(I, NoCurl, 1.0); g.D.addDirection(I, VUp, 1.0);
+  g.D.addCurl(T, HalfCurl, 1.0);
+  for(const f of [M,R,P]){ g.D.addCurl(f, FullCurl, 1.0); g.D.addCurl(f, HalfCurl, 0.8); }
+
+  // E — all fingers curled under, thumb tucked
+  g.E = new GestureDescription('E');
+  for(const f of [T,I,M,R,P]){ g.E.addCurl(f, FullCurl, 1.0); g.E.addCurl(f, HalfCurl, 0.8); }
+
+  // F — index and thumb circle, other three extended
+  g.F = new GestureDescription('F');
+  g.F.addCurl(T, HalfCurl, 1.0);
+  g.F.addCurl(I, HalfCurl, 1.0); g.F.addCurl(I, FullCurl, 0.8);
+  for(const f of [M,R,P]){ g.F.addCurl(f, NoCurl, 1.0); g.F.addDirection(f, VUp, 1.0); }
+
+  // G — index and thumb pointing horizontally, others curled
+  g.G = new GestureDescription('G');
+  g.G.addCurl(I, NoCurl, 1.0); g.G.addDirection(I, HLeft, 1.0); g.G.addDirection(I, HRight, 0.9);
+  g.G.addCurl(T, NoCurl, 1.0); g.G.addDirection(T, HLeft, 1.0); g.G.addDirection(T, HRight, 0.9);
+  for(const f of [M,R,P]){ g.G.addCurl(f, FullCurl, 1.0); }
+
+  // H — index and middle together pointing horizontal
+  g.H = new GestureDescription('H');
+  for(const f of [I,M]){ g.H.addCurl(f, NoCurl, 1.0); g.H.addDirection(f, HLeft, 1.0); g.H.addDirection(f, HRight, 0.9); }
+  g.H.addCurl(T, FullCurl, 1.0); g.H.addCurl(T, HalfCurl, 0.8);
+  for(const f of [R,P]){ g.H.addCurl(f, FullCurl, 1.0); }
+
+  // I — pinky only extended up
+  g.I = new GestureDescription('I');
+  g.I.addCurl(P, NoCurl, 1.0); g.I.addDirection(P, VUp, 1.0); g.I.addDirection(P, DUR, 0.8);
+  for(const f of [T,I,M,R]){ g.I.addCurl(f, FullCurl, 1.0); g.I.addCurl(f, HalfCurl, 0.8); }
+
+  // K — index and middle up with thumb between them
+  g.K = new GestureDescription('K');
+  g.K.addCurl(I, NoCurl, 1.0); g.K.addDirection(I, VUp, 1.0); g.K.addDirection(I, DUR, 0.9);
+  g.K.addCurl(M, NoCurl, 1.0); g.K.addDirection(M, DUR, 1.0); g.K.addDirection(M, VUp, 0.8);
+  g.K.addCurl(T, NoCurl, 1.0);
+  for(const f of [R,P]){ g.K.addCurl(f, FullCurl, 1.0); }
+
+  // L — L-shape: index up, thumb out, others curled
+  g.L = new GestureDescription('L');
+  g.L.addCurl(I, NoCurl, 1.0); g.L.addDirection(I, VUp, 1.0);
+  g.L.addCurl(T, NoCurl, 1.0); g.L.addDirection(T, HLeft, 1.0); g.L.addDirection(T, HRight, 0.9);
+  for(const f of [M,R,P]){ g.L.addCurl(f, FullCurl, 1.0); }
+
+  // M — thumb under index, middle, ring (3 fingers over thumb)
+  g.M = new GestureDescription('M');
+  g.M.addCurl(T, HalfCurl, 1.0); g.M.addCurl(T, FullCurl, 0.8);
+  for(const f of [I,M,R]){ g.M.addCurl(f, HalfCurl, 1.0); g.M.addCurl(f, FullCurl, 0.8); g.M.addCurl(f, NoCurl, 0.5); }
+  g.M.addCurl(P, FullCurl, 1.0);
+
+  // N — thumb under index and middle (2 fingers over thumb)
+  g.N = new GestureDescription('N');
+  g.N.addCurl(T, HalfCurl, 1.0); g.N.addCurl(T, FullCurl, 0.8);
+  for(const f of [I,M]){ g.N.addCurl(f, HalfCurl, 1.0); g.N.addCurl(f, FullCurl, 0.8); }
+  for(const f of [R,P]){ g.N.addCurl(f, FullCurl, 1.0); }
+
+  // O — all fingers form an O shape
+  g.O = new GestureDescription('O');
+  for(const f of [T,I,M,R,P]){ g.O.addCurl(f, HalfCurl, 1.0); g.O.addDirection(f, DDL, 0.9); g.O.addDirection(f, VDown, 0.8); }
+
+  // P — like K but pointing down
+  g.P = new GestureDescription('P');
+  g.P.addCurl(I, NoCurl, 1.0); g.P.addDirection(I, VDown, 1.0); g.P.addDirection(I, DDL, 0.9);
+  g.P.addCurl(M, NoCurl, 1.0); g.P.addDirection(M, VDown, 0.9);
+  g.P.addCurl(T, NoCurl, 1.0);
+  for(const f of [R,P]){ g.P.addCurl(f, FullCurl, 1.0); }
+
+  // Q — like G but pointing down
+  g.Q = new GestureDescription('Q');
+  g.Q.addCurl(I, NoCurl, 1.0); g.Q.addDirection(I, VDown, 1.0); g.Q.addDirection(I, DDL, 0.9);
+  g.Q.addCurl(T, NoCurl, 1.0); g.Q.addDirection(T, VDown, 1.0);
+  for(const f of [M,R,P]){ g.Q.addCurl(f, FullCurl, 1.0); }
+
+  // R — index and middle crossed
+  g.R = new GestureDescription('R');
+  g.R.addCurl(I, NoCurl, 1.0); g.R.addDirection(I, VUp, 1.0);
+  g.R.addCurl(M, NoCurl, 1.0); g.R.addDirection(M, VUp, 1.0);
+  for(const f of [T,R,P]){ g.R.addCurl(f, FullCurl, 1.0); g.R.addCurl(f, HalfCurl, 0.8); }
+
+  // S — fist with thumb over fingers
+  g.S = new GestureDescription('S');
+  for(const f of [I,M,R,P]){ g.S.addCurl(f, FullCurl, 1.0); }
+  g.S.addCurl(T, HalfCurl, 1.0); g.S.addCurl(T, NoCurl, 0.8);
+
+  // T — thumb tucked between index and middle
+  g.T = new GestureDescription('T');
+  g.T.addCurl(T, NoCurl, 1.0); g.T.addCurl(T, HalfCurl, 0.9);
+  g.T.addCurl(I, FullCurl, 1.0); g.T.addCurl(I, HalfCurl, 0.9);
+  for(const f of [M,R,P]){ g.T.addCurl(f, FullCurl, 1.0); }
+
+  // U — index and middle up together
+  g.U = new GestureDescription('U');
+  g.U.addCurl(I, NoCurl, 1.0); g.U.addDirection(I, VUp, 1.0);
+  g.U.addCurl(M, NoCurl, 1.0); g.U.addDirection(M, VUp, 1.0);
+  for(const f of [T,R,P]){ g.U.addCurl(f, FullCurl, 1.0); g.U.addCurl(f, HalfCurl, 0.8); }
+
+  // V — index and middle in V/peace sign spread apart
+  g.V = new GestureDescription('V');
+  g.V.addCurl(I, NoCurl, 1.0); g.V.addDirection(I, VUp, 1.0); g.V.addDirection(I, DUR, 0.9);
+  g.V.addCurl(M, NoCurl, 1.0); g.V.addDirection(M, VUp, 1.0); g.V.addDirection(M, DUL, 0.9);
+  for(const f of [T,R,P]){ g.V.addCurl(f, FullCurl, 1.0); g.V.addCurl(f, HalfCurl, 0.8); }
+
+  // W — index, middle, ring up and spread
+  g.W = new GestureDescription('W');
+  for(const f of [I,M,R]){ g.W.addCurl(f, NoCurl, 1.0); g.W.addDirection(f, VUp, 1.0); g.W.addDirection(f, DUR, 0.8); }
+  g.W.addCurl(T, FullCurl, 1.0); g.W.addCurl(T, HalfCurl, 0.8);
+  g.W.addCurl(P, FullCurl, 1.0);
+
+  // X — index hooked/half-curled
+  g.X = new GestureDescription('X');
+  g.X.addCurl(I, HalfCurl, 1.0);
+  for(const f of [T,M,R,P]){ g.X.addCurl(f, FullCurl, 1.0); g.X.addCurl(f, HalfCurl, 0.7); }
+
+  // Y — thumb and pinky out
+  g.Y = new GestureDescription('Y');
+  g.Y.addCurl(T, NoCurl, 1.0); g.Y.addDirection(T, HLeft, 0.9); g.Y.addDirection(T, DUL, 0.8);
+  g.Y.addCurl(P, NoCurl, 1.0); g.Y.addDirection(P, VUp, 0.9); g.Y.addDirection(P, DUR, 0.8);
+  for(const f of [I,M,R]){ g.Y.addCurl(f, FullCurl, 1.0); }
+
+  // SPACE — open flat hand, all fingers extended
+  g.SPACE = new GestureDescription('SPACE');
+  for(const f of [T,I,M,R,P]){ g.SPACE.addCurl(f, NoCurl, 1.0); g.SPACE.addDirection(f, VUp, 1.0); g.SPACE.addDirection(f, DUR, 0.7); g.SPACE.addDirection(f, DUL, 0.7); }
+
+  return Object.values(g);
+}
+
+// ═══════════════════════════════════════════════════════════
+// HAND SKELETON DRAW
+// ═══════════════════════════════════════════════════════════
+const CONNS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+function drawHand(ctx, annotations, W, H) {
+  // TF.js handpose returns {annotations: {indexFinger:[...],...}, landmarks:[...]}
+  // landmarks is flat array of [x,y,z] arrays
+  const pts = annotations; // already [[x,y,z], ...]
+  ctx.strokeStyle='rgba(79,255,176,.55)';
+  ctx.lineWidth=2.5;
+  for(const [a,b] of CONNS){
+    if(!pts[a]||!pts[b]) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[a][0], pts[a][1]);
+    ctx.lineTo(pts[b][0], pts[b][1]);
+    ctx.stroke();
+  }
+  for(let i=0;i<pts.length;i++){
+    if(!pts[i]) continue;
+    const tip=i%4===0;
+    ctx.beginPath();
+    ctx.arc(pts[i][0], pts[i][1], tip?5.5:3, 0, Math.PI*2);
+    ctx.fillStyle=i===0?'rgba(255,255,255,.8)':tip?'rgba(79,255,176,1)':'rgba(79,255,176,.7)';
+    ctx.fill();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// DETECTION LOOP
+// ═══════════════════════════════════════════════════════════
+async function detectionLoop() {
+  if (!detecting) return;
+  const vid = document.getElementById('sigVid');
+  const cvs = document.getElementById('sigCvs');
+  const ctx = cvs.getContext('2d');
+
+  if (vid.readyState >= 2) {
+    cvs.width  = vid.videoWidth;
+    cvs.height = vid.videoHeight;
+    ctx.clearRect(0, 0, cvs.width, cvs.height);
+
+    try {
+      const predictions = await handposeModel.estimateHands(vid);
+      if (predictions.length > 0) {
+        const hand = predictions[0];
+        const landmarks = hand.landmarks; // [[x,y,z],...]
+
+        drawHand(ctx, landmarks, cvs.width, cvs.height);
+
+        // Run fingerpose
+        const result = gestureEstimator.estimate(landmarks, 7.5);
+
+        if (result.gestures.length > 0) {
+          // Pick best gesture
+          const best = result.gestures.reduce((a,b) => a.score > b.score ? a : b);
+          const score = best.score;
+          const letter = best.name === 'SPACE' ? ' ' : best.name;
+
+          updateDetUI(letter, score);
+          handleHold(letter, score);
+        } else {
+          clearDetUI();
+        }
+      } else {
+        clearDetUI();
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+      }
+    } catch(e) { /* skip frame */ }
+  }
+
+  // FPS counter
+  frameCounter++;
+  const now = performance.now();
+  if (now - lastFpsTime > 1000) {
+    document.getElementById('fpsBadge').textContent = frameCounter + ' fps';
+    frameCounter = 0; lastFpsTime = now;
+  }
+
+  animFrame = requestAnimationFrame(detectionLoop);
+}
+
+function updateDetUI(letter, score) {
+  const badge = document.getElementById('detBadge');
+  badge.classList.add('on');
+  document.getElementById('detChar').textContent = letter === ' ' ? '·' : letter;
+  document.getElementById('detFill').style.width = (score / 10 * 100) + '%';
+  document.getElementById('detScore').textContent = score.toFixed(1) + '/10';
+}
+
+function clearDetUI() {
+  document.getElementById('detBadge').classList.remove('on');
+  document.getElementById('holdRing').classList.remove('on');
+  lastLetter = null; holdCount = 0;
+}
+
+function handleHold(letter, score) {
+  const ring = document.getElementById('holdRing');
+  const circle = document.getElementById('holdCircle');
+  const label = document.getElementById('holdLabel');
+
+  if (letter === lastLetter) {
+    holdCount++;
+    const pct = Math.min(holdCount / HOLD_FRAMES, 1);
+    ring.classList.add('on');
+    circle.style.strokeDashoffset = 220 - (220 * pct);
+    label.textContent = letter === ' ' ? '·' : letter;
+
+    if (holdCount >= HOLD_FRAMES) {
+      commitLetter(letter);
+      holdCount = 0;
+      // Pop animation
+      const dc = document.getElementById('detChar');
+      dc.classList.add('pop'); setTimeout(()=>dc.classList.remove('pop'), 200);
+      // Reset ring
+      ring.classList.remove('on');
+      circle.style.strokeDashoffset = 220;
+    }
+  } else {
+    lastLetter = letter; holdCount = 1;
+    ring.classList.remove('on');
+    circle.style.strokeDashoffset = 220;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// TRANSCRIPT
+// ═══════════════════════════════════════════════════════════
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+
+function syncUI() {
+  const d = esc(transcript.slice(-70));
+  const c = '<span class="cursor"></span>';
+  document.getElementById('sigBubble').innerHTML = d + c;
+  document.getElementById('lstBubble').innerHTML = d + c;
+  document.getElementById('tbarText').textContent = transcript || 'Waiting for signs…';
+}
+
+function commitLetter(c) {
+  transcript += c;
+  syncUI();
+  toast(c === ' ' ? 'Space' : `"${c}"`, 600);
+}
+
+function clearT(){ transcript=''; syncUI(); toast('Cleared'); }
+function delLast(){ if(!transcript)return; transcript=transcript.slice(0,-1); syncUI(); }
+function speakT(){
+  if(!transcript.trim()) return toast('Nothing to speak');
+  const u = new SpeechSynthesisUtterance(transcript);
+  u.rate = .95; speechSynthesis.cancel(); speechSynthesis.speak(u); toast('Speaking…');
+}
+function copyT(){
+  if(!transcript) return toast('Nothing to copy');
+  navigator.clipboard.writeText(transcript).then(()=>toast('Copied!'));
+}
+
+// ═══════════════════════════════════════════════════════════
+// CAMERAS
+// ═══════════════════════════════════════════════════════════
+async function startSigCam() {
+  try {
+    sigStream = await navigator.mediaDevices.getUserMedia({
+      video:{ width:640, height:480, facingMode:'user', frameRate:{ideal:20,max:30} },
+      audio: true
+    });
+    const v = document.getElementById('sigVid');
+    v.srcObject = sigStream;
+    await new Promise(r=>v.onloadedmetadata=r);
+    document.getElementById('sigPh').classList.add('gone');
+    return true;
+  } catch(e) {
+    toast('Camera access denied');
+    document.getElementById('sigPh').innerHTML='<div class="vph-icon">❌</div><p>Camera denied</p><p style="font-size:.7rem;color:rgba(240,237,232,.3)">Allow camera to use detection</p>';
+    return false;
+  }
+}
+
+async function startLstCam() {
+  try {
+    lstStream = await navigator.mediaDevices.getUserMedia({
+      video:{ width:640, height:480, facingMode:'user' }, audio:true
+    });
+    const v = document.getElementById('lstVid');
+    v.srcObject = lstStream;
+    await new Promise(r=>v.onloadedmetadata=r);
+    document.getElementById('lstPh').classList.add('gone');
+  } catch(e) {
+    // Show avatar placeholder if second camera not available
+    const ph = document.getElementById('lstPh');
+    ph.innerHTML=`
+      <div style="width:70px;height:70px;border-radius:50%;background:rgba(79,195,255,.1);display:flex;align-items:center;justify-content:center;font-size:1.6rem;border:2px solid rgba(79,195,255,.2)">💬</div>
+      <p style="font-size:.8rem">Listener</p>
+      <p style="font-size:.7rem;color:rgba(240,237,232,.3)">Translation appears below</p>
+    `;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// NAVIGATION
+// ═══════════════════════════════════════════════════════════
+function startTimer(){
+  const start=Date.now(), el=document.getElementById('timer');
+  el.classList.add('on');
+  callInterval=setInterval(()=>{
+    const s=Math.floor((Date.now()-start)/1000);
+    el.textContent=String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+  },1000);
+}
+
+function stopTimer(){ clearInterval(callInterval); document.getElementById('timer').classList.remove('on'); }
+
+async function startCall() {
+  document.getElementById('landing').style.display='none';
+  document.getElementById('callView').classList.add('on');
+  document.getElementById('backBtn').style.display='';
+  document.getElementById('livePill').classList.add('on');
+  document.getElementById('refToggle').classList.add('show');
+  startTimer();
+
+  toast('Cameras starting…',1500);
+  await Promise.all([startSigCam(), startLstCam()]);
+
+  // Start detection loop
+  detecting = true;
+  detectionLoop();
+
+  toast('🤟 Hold a sign steady — it will commit after ~1 second!', 4000);
+}
+
+function endCall() {
+  detecting = false;
+  if (animFrame) cancelAnimationFrame(animFrame);
+  sigStream?.getTracks().forEach(t=>t.stop());
+  lstStream?.getTracks().forEach(t=>t.stop());
+  sigStream=null; lstStream=null;
+  document.getElementById('sigVid').srcObject=null;
+  document.getElementById('lstVid').srcObject=null;
+  document.getElementById('sigCvs').getContext('2d').clearRect(0,0,9999,9999);
+  document.getElementById('sigPh').className='vph';
+  document.getElementById('sigPh').innerHTML='<div class="vph-icon">🤟</div><p>Camera starting…</p>';
+  document.getElementById('lstPh').className='vph';
+  document.getElementById('lstPh').innerHTML='<div class="vph-icon">💬</div><p>Camera starting…</p>';
+  clearDetUI();
+  stopTimer();
+  document.getElementById('livePill').classList.remove('on');
+  document.getElementById('callView').classList.remove('on');
+  document.getElementById('landing').style.display='';
+  document.getElementById('backBtn').style.display='none';
+  document.getElementById('refToggle').classList.remove('show');
+  if(refVisible) toggleRef();
+  clearT();
+}
+
+function toggleMic(){
+  micMuted=!micMuted;
+  sigStream?.getAudioTracks().forEach(t=>t.enabled=!micMuted);
+  document.getElementById('micBtn').textContent=micMuted?'🔇':'🎤';
+  toast(micMuted?'Mic muted':'Mic on');
+}
+
+// ═══════════════════════════════════════════════════════════
+// REFERENCE PANEL
+// ═══════════════════════════════════════════════════════════
+const ASL_DESC = {
+  A:'Fist, thumb side', B:'4 fingers up', C:'Curved C',
+  D:'Index up, O-ring', E:'Fingers curled', F:'Index-thumb circle',
+  G:'Index+thumb sideways', H:'2 fingers sideways', I:'Pinky up',
+  J:'Pinky traces J*', K:'Index+middle+thumb', L:'L-shape',
+  M:'3 fingers over thumb', N:'2 fingers over thumb', O:'O-shape',
+  P:'K pointing down', Q:'G pointing down', R:'Index+middle crossed',
+  S:'Fist, thumb over', T:'Thumb thru index', U:'2 fingers together',
+  V:'V/peace sign', W:'3 fingers spread', X:'Index hooked',
+  Y:'Thumb+pinky out', Z:'Draw Z in air*'
+};
+
+function buildRefGrid() {
+  const grid = document.getElementById('refGrid');
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(l=>{
+    const item=document.createElement('div');
+    item.className='ref-item';
+    item.innerHTML=`<div class="rl">${l}</div><div class="rs">${(ASL_DESC[l]||'').split(' ').slice(0,2).join(' ')}</div>`;
+    item.title=ASL_DESC[l]||'';
+    grid.appendChild(item);
+  });
+}
+
+function toggleRef(){
+  refVisible=!refVisible;
+  document.getElementById('refPanel').classList.toggle('show',refVisible);
+}
+
+// ═══════════════════════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════════════════════
+let toastTimer=null;
+function toast(msg,dur=2400){
+  clearTimeout(toastTimer);
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.classList.add('on');
+  toastTimer=setTimeout(()=>el.classList.remove('on'),dur);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INIT — load real TF.js Handpose model
+// ═══════════════════════════════════════════════════════════
+function setStep(n, state){
+  const el=document.getElementById('step'+n);
+  if(!el) return;
+  el.className='load-step '+(state==='done'?'done':state==='active'?'active':'');
+}
+
+async function init(){
+  const ov=document.getElementById('loadOverlay');
+  const msg=document.getElementById('loadMsg');
+
+  try{
+    // Step 1: TF.js backend
+    setStep(1,'active');
+    await tf.ready();
+    setStep(1,'done'); setStep(2,'active');
+    msg.textContent='Loading Handpose neural network…';
+
+    // Step 2: Load real handpose model
+    handposeModel = await handpose.load({
+      detectionConfidence: 0.8,
+      maxContinuousChecks: 10,
+      iouThreshold: 0.3,
+      scoreThreshold: 0.75
+    });
+    setStep(2,'done'); setStep(3,'active');
+    msg.textContent='Defining ASL gesture library…';
+
+    // Step 3: Build fingerpose gesture estimator with all ASL letters
+    await new Promise(r=>setTimeout(r,200));
+    const gestures = buildGestures();
+    gestureEstimator = new fp.GestureEstimator(gestures);
+    setStep(3,'done'); setStep(4,'active');
+    msg.textContent='Warming up…';
+
+    // Step 4: Warm up with dummy tensor
+    const dummyTensor = tf.zeros([1,1,1,3]);
+    await handposeModel.estimateHands(document.createElement('canvas'));
+    dummyTensor.dispose();
+    setStep(4,'done');
+
+    msg.textContent='Ready!';
+    await new Promise(r=>setTimeout(r,400));
+
+    // Build ref grid
+    buildRefGrid();
+
+  }catch(e){
+    console.error('Init error:', e);
+    msg.textContent='Error loading — check console and refresh';
+    document.getElementById('loadMsg').style.color='var(--red)';
+    return;
+  }
+
+  ov.classList.add('out');
+  setTimeout(()=>ov.style.display='none',600);
+}
+
+init();
+</script>
+</body>
+</html>
